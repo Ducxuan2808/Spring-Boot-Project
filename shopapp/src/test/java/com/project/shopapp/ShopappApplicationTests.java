@@ -9,5 +9,4 @@ class ShopappApplicationTests {
 	@Test
 	void contextLoads() {
 	}
-
 }

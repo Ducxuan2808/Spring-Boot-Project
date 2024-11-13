@@ -1,6 +1,8 @@
 package com.project.shopapp.services;
 
-import com.project.shopapp.components.JwtTokenUtil;
+import com.project.shopapp.components.JwtTokenUtils;
+import com.project.shopapp.components.LocalizationUtils;
+import com.project.shopapp.dtos.UpdateUserDTO;
 import com.project.shopapp.dtos.UserDTO;
 import com.project.shopapp.exceptions.DataNotFoundException;
 import com.project.shopapp.exceptions.PermissionDenyException;
@@ -8,6 +10,7 @@ import com.project.shopapp.models.Role;
 import com.project.shopapp.models.User;
 import com.project.shopapp.repositories.RoleRepository;
 import com.project.shopapp.repositories.UserRepository;
+import com.project.shopapp.utils.MessageKeys;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -25,8 +28,9 @@ public class UserService implements IUserService{
     private final UserRepository userRepository;
     private final RoleRepository  roleRepository;
     private final PasswordEncoder passwordEncoder;
-    private final JwtTokenUtil jwtTokenUtil;
+    private final JwtTokenUtils jwtTokenUtil;
     private final AuthenticationManager authenticationManager;
+    private  final LocalizationUtils localizationUtils;
 
     @Override
     @Transactional
@@ -51,6 +55,7 @@ public class UserService implements IUserService{
                 .dateOfBirth(userDTO.getDateOfBirth())
                 .facebookAccountId(userDTO.getFacebookAccountId())
                 .googleAccountId(userDTO.getGoogleAccountId())
+                .active(true)
                 .build();
 
         newUser.setRole(role);
@@ -65,10 +70,11 @@ public class UserService implements IUserService{
     }
 
     @Override
-    public String login(String phoneNumber, String password) throws Exception {
+    public String login(String phoneNumber, String password, Long roleId) throws Exception {
         Optional<User> optionalUser= userRepository.findByPhoneNumber(phoneNumber);
         if(optionalUser.isEmpty()){
-            throw new DataNotFoundException("Invalid phone number / password");
+            throw new DataNotFoundException(localizationUtils.getLocalizationMessage((
+                    MessageKeys.WRONG_PHONE_PASSWORD)));
         }
 
         //return optionalUser.get();//muon tra ve JWT token
@@ -77,14 +83,86 @@ public class UserService implements IUserService{
         if(existingUser.getFacebookAccountId()==0
                 && existingUser.getGoogleAccountId()==0){
             if(!passwordEncoder.matches(password,existingUser.getPassword())){
-                throw  new BadCredentialsException("Wrong phone number password");
+                throw  new BadCredentialsException(localizationUtils.getLocalizationMessage(
+                        MessageKeys.WRONG_PHONE_PASSWORD));
             }
         }
+        Optional<Role> optionalRole = roleRepository.findById(roleId);
+        if(optionalRole.isEmpty()||!roleId.equals(existingUser.getRole().getId())){
+            throw new DataNotFoundException(localizationUtils.getLocalizationMessage(
+                    MessageKeys.ROLE_DOES_NOT_EXISTS));
+        }
+        if(!optionalUser.get().isActive()){
+            throw new DataNotFoundException(localizationUtils.getLocalizationMessage(
+                    MessageKeys.USER_IS_LOCKED));
+        }
+
         UsernamePasswordAuthenticationToken authenticationToken =
                 new UsernamePasswordAuthenticationToken(phoneNumber,password,
                         existingUser.getAuthorities());
         //Authenticate with Java Spring Security
         authenticationManager.authenticate(authenticationToken);
         return jwtTokenUtil.generateToken(existingUser);
+    }
+
+    @Override
+    public User getUserDetailsFromToken(String token) throws Exception {
+        if (jwtTokenUtil.isTokenExpired(token)){
+            throw new Exception("Token is expried");
+        }
+        String phoneNumber = jwtTokenUtil.extractPhoneNumber(token);
+        Optional<User> user =userRepository.findByPhoneNumber(phoneNumber);
+
+        if(user.isPresent()){
+            return  user.get();
+
+        }else {
+            throw new Exception("User not found");
+        }
+    }
+
+    @Transactional
+    @Override
+    public User updateUser(Long userId, UpdateUserDTO updatedUserDTO) throws Exception {
+        User existingUser = userRepository.findById(userId)
+                .orElseThrow(()->new DataNotFoundException("User not found"));
+        String newPhoneNumber = updatedUserDTO.getPhoneNumber();
+        if(!existingUser.getPhoneNumber().equals(newPhoneNumber) &&
+            userRepository.existsByPhoneNumber(newPhoneNumber)){
+            throw  new DataIntegrityViolationException("Phone number already exist");
+        }
+
+        if(updatedUserDTO.getFullName()!=null){
+            existingUser.setFullName(updatedUserDTO.getFullName());
+        }
+        if (newPhoneNumber != null) {
+            existingUser.setPhoneNumber(newPhoneNumber);
+        }
+        if (updatedUserDTO.getAddress() != null) {
+            existingUser.setAddress(updatedUserDTO.getAddress());
+        }
+        if (updatedUserDTO.getDateOfBirth() != null) {
+            existingUser.setDateOfBirth(updatedUserDTO.getDateOfBirth());
+        }
+        if (updatedUserDTO.getFacebookAccountId() > 0) {
+            existingUser.setFacebookAccountId(updatedUserDTO.getFacebookAccountId());
+        }
+        if (updatedUserDTO.getGoogleAccountId() > 0) {
+            existingUser.setGoogleAccountId(updatedUserDTO.getGoogleAccountId());
+        }
+
+
+
+        if(updatedUserDTO.getPassword()!=null
+            && !updatedUserDTO.getPassword().isEmpty()){
+            if(!updatedUserDTO.getPassword().equals(updatedUserDTO.getRetypePassword())){
+                throw new DataNotFoundException("Password and retype password not the same");
+            }
+            String newPassword = updatedUserDTO.getPassword();
+            String encodedPassword = passwordEncoder.encode(newPassword);
+            existingUser.setPassword(encodedPassword);
+        }
+
+        return userRepository.save(existingUser);
     }
 }
